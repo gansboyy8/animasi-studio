@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111210">
+  <meta name="description" content="Ruang kreatif untuk mengembangkan ide menjadi draft film animasi.">
+  <title>Animasi Studio Gan — Ruang kreatif animasi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="Animasi Studio Gan">
+        <span class="mark"><i></i><i></i><i></i></span><span class="brand-name">animasi<span>studio</span><b>gan</b></span>
+      </a>
+      <div class="overline">WORKSPACE</div>
+      <nav aria-label="Navigasi studio">
+        <a class="nav active" href="#cerita">✳ <span>Ruang kerja</span></a>
+        <a class="nav" href="#storyboard">▤ <span>Storyboard</span><small id="nav-count">4</small></a>
+        <a class="nav" href="#gaya">◈ <span>Gaya animasi</span></a>
+        <a class="nav" href="#suara">♫ <span>Suara &amp; SFX</span></a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="inspiration"><span>✦</span><b>Ide kamu, dunia baru.</b><p>Mulai dari cerita kecil. Kembangkan pelan-pelan di sini.</p><a href="#cara-kerja">Kenali alurnya ↗</a></div>
+        <div class="profile"><i>G</i><span><b>Gan</b><small>Studio personal</small></span><em>···</em></div>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div class="mobile-brand"><span class="mark"><i></i><i></i><i></i></span> Animasi Studio Gan</div>
+        <div class="crumb">Project <span>/</span> <b>Film pendek pertamaku</b></div>
+        <div class="top-actions"><span class="saved"><i></i><span id="save-label">Tersimpan</span></span><button class="button quiet" id="export" type="button">↓ &nbsp;Ekspor draft</button><button class="button primary new-project" data-scroll="cerita">+ Project baru</button></div>
+      </header>
+      <div class="content">
+        <section class="page-heading" id="cerita">
+          <div><div class="eyebrow"><i></i> RUANG KERJA KREATIF</div><h1>Dari ide jadi <span>cerita.</span></h1><p>Tuangkan bayanganmu. Kita susun jadi film, satu adegan dalam satu waktu.</p></div>
+          <div class="project-meta">◷ &nbsp; Film pendek <b>·</b> Belum diekspor</div>
+        </section>
+        <section class="workbench">
+          <div class="panel idea-panel">
+            <div class="panel-top"><div class="step"><b>01</b> MULAI DARI IDE</div><span class="draft"><i></i> Draft lokal</span></div>
+            <label for="idea">Ceritakan ide yang ada di kepalamu</label><p class="hint">Bisa satu kalimat, bisa juga cerita lengkap. Nanti bisa kamu ubah lagi.</p>
+            <textarea id="idea" maxlength="1200" placeholder="Contoh: Seorang anak menemukan bintang kecil yang jatuh di halaman rumahnya...">Seekor kucing kecil bernama Momo menemukan pintu rahasia di balik lemari tua. Di balik pintu itu ada taman malam yang kehilangan semua bintangnya. Momo berangkat mencari cahaya bersama kunang-kunang pemberani.</textarea>
+            <div class="idea-meta"><span id="char-count">0 / 1.200</span><span>✦ Draft contoh di perangkatmu</span></div>
+            <button class="button primary generate" id="generate" type="button"><span>✦</span> Susun draft cerita <b>→</b></button>
+            <div class="divider"></div>
+            <div class="script-head"><div><div class="step"><b>02</b> NASKAH AWAL</div><h2>Premis &amp; sinopsis</h2></div><span class="editable">Bisa dikoreksi ↗</span></div>
+            <textarea class="script" id="script" aria-label="Premis dan sinopsis" rows="4">Saat sebuah taman malam kehilangan bintang-bintangnya, Momo si kucing mungil mengikuti cahaya kunang-kunang menuju dunia rahasia. Petualangan mereka mengajarkan bahwa cahaya paling berani sering muncul ketika kita saling membantu.</textarea>
+            <div class="script-meta"><span>Draft lokal — bukan hasil generasi AI</span><button id="regenerate">↻ Susun ulang dari ide</button></div>
+          </div>
+          <div class="panel preview-panel">
+            <div class="preview-head"><div><div class="step"><b>05</b> PRATINJAU CERITA</div><strong id="preview-title">Taman tanpa bintang</strong></div><span class="preview-label"><i></i> PRATINJAU</span></div>
+            <div class="stage style-paper" id="stage">
+              <video id="generated-video" class="generated-video" controls playsinline hidden></video>
+              <div class="grain"></div><div class="moon"></div><div class="hill far"></div><div class="hill near"></div>
+              <span class="flower f1">✿</span><span class="flower f2">✿</span><i class="firefly ff1"></i><i class="firefly ff2"></i><i class="firefly ff3"></i>
+              <div class="cat"><i class="tail"></i><i class="body"></i><i class="head"><em class="ear e1"></em><em class="ear e2"></em><em class="eye e1"></em><em class="eye e2"></em><em class="nose"></em></i></div>
+              <div class="caption"><i></i><span id="caption">Momo melangkah ke taman rahasia yang gelap.</span></div><div class="counter" id="counter">01 / 04</div>
+            </div>
+            <div class="controls"><button class="round" id="prev" aria-label="Adegan sebelumnya">‹</button><button class="play" id="play" aria-label="Putar pratinjau">▶</button><button class="round" id="next" aria-label="Adegan berikutnya">›</button><div class="timeline"><div><i id="progress"></i></div><small><span id="time">00:00</span><span id="duration">00:32</span></small></div><button class="sound muted" id="sound" aria-label="Aktifkan suara" title="Aktifkan suara pratinjau">♫</button><span class="ratio">16:9</span></div>
+            <div class="generation-row"><button class="button primary" id="generate-video" type="button">✦ &nbsp;Buat video AI adegan ini</button><span id="video-status" role="status">Memeriksa konfigurasi AI…</span></div>
+            <div class="notice" id="preview-notice">ⓘ &nbsp; Visual ini adalah ilustrasi pratinjau. Video animasi belum dirender.</div>
+          </div>
+        </section>
+        <section class="storyboard" id="storyboard">
+          <div class="section-head"><div><div class="step"><b>03</b> RANGKAIAN ADEGAN</div><h2>Storyboard <small id="scene-total">(4 adegan)</small></h2></div><button class="button outline" id="add-scene">＋ &nbsp;Tambah adegan</button></div>
+          <div class="scenes" id="scenes"></div><p class="section-note">Pilih adegan untuk mengubah pratinjau. Klik teks untuk mengoreksi naskah dan deskripsi visual.</p>
+        </section>
+        <section class="production">
+          <div class="panel production-panel" id="gaya"><div class="step"><b>04</b> ARAH VISUAL</div><div class="subhead"><div><h2>Gaya animasi</h2><p>Pilih arahan visual untuk draft-mu.</p></div><span class="chip">Bisa diganti kapan saja</span></div>
+            <div class="styles" role="group" aria-label="Pilih gaya animasi">
+              <button class="style-option selected" data-style="paper"><i class="swatch paper">✳</i><span><b>Dongeng kertas</b><small>Tekstur lembut · 2D</small></span><em>✓</em></button>
+              <button class="style-option" data-style="clay"><i class="swatch clay">●</i><span><b>Clay ceria</b><small>Hangat · stop motion</small></span><em>✓</em></button>
+              <button class="style-option" data-style="dream"><i class="swatch dream">✦</i><span><b>Mimpi warna</b><small>Ekspresif · 2D</small></span><em>✓</em></button>
+            </div><div class="disclaimer">Pilihan gaya menjadi arahan prompt video; hasil generasi dapat berbeda dari mockup.</div>
+          </div>
+          <div class="panel production-panel" id="suara"><div class="step"><b>06</b> SUASANA &amp; SUARA</div><div class="subhead"><div><h2>Suara cerita</h2><p>Rencanakan warna audio per adegan.</p></div><span class="chip">Draft audio</span></div>
+            <div class="voice"><i>♫</i><span><b>Narasi cerita</b><small>Pratinjau suara dari perangkat</small></span><select id="voice" aria-label="Pilih suara narator"><option value="id">Bahasa Indonesia</option><option value="en">English</option></select><button id="speak" aria-label="Dengarkan narasi">▶</button></div>
+            <div class="sound-list"><label class="sound-row"><i>☼</i><span><b>Angin malam</b><small>Ambience · lembut</small></span><input type="checkbox" checked><em></em></label><label class="sound-row"><i>✧</i><span><b>Kelap-kelip ajaib</b><small>Efek suara · ringan</small></span><input type="checkbox" checked><em></em></label><label class="sound-row"><i>♬</i><span><b>Musik petualangan</b><small>Musik · hangat</small></span><input type="checkbox"><em></em></label></div>
+            <div class="generation-row audio-generation"><button class="button outline" id="generate-sfx" type="button">♫ &nbsp;Buat SFX AI untuk adegan aktif</button><span id="sfx-status" role="status">Memeriksa konfigurasi AI…</span></div>
+            <div id="sfx-result"></div>
+            <div class="audio-notice" id="audio-notice">ⓘ &nbsp; Narasi memakai fitur suara bawaan browser bila didukung. SFX AI memerlukan konfigurasi server.</div>
+          </div>
+        </section>
+        <section class="how" id="cara-kerja"><i>✦</i><div><b>AI generatif dengan fal.ai</b><p>Server mengirim permintaan video dan SFX ke antrean fal.ai hanya setelah kamu menekan tombol generate. Kunci API tetap di server. Penyedia dapat mengenakan biaya setelah kunci ditambahkan; pantau paket dan penggunaan akunmu.</p></div><button id="clear">Mulai dari awal ↗</button></section>
+        <footer>Animasi Studio Gan <b>·</b> ruang untuk imajinasi <span>Prototipe kreatif <i></i> Data tersimpan di perangkat ini</span></footer>
+      </div>
+    </main>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+</body>
+</html>
