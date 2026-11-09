@@ -172,7 +172,7 @@ function updatePreview() {
     generatedVideo.src = scene.videoUrl;
     generatedVideo.hidden = false;
     $("#stage").classList.add("has-video");
-    $("#preview-notice").textContent = "Video hasil generasi fal.ai untuk adegan ini. Tautan media provider dapat kedaluwarsa.";
+    $("#preview-notice").textContent = "Video dibuat secara lokal oleh ComfyUI. File tersimpan pada komputer ini.";
   } else {
     generatedVideo.pause();
     generatedVideo.removeAttribute("src");
@@ -206,7 +206,7 @@ function renderSfxResult(scene) {
   audio.src = scene.sfxUrl;
   audio.setAttribute("aria-label", `Sound effect AI: ${scene.sfx}`);
   const note = document.createElement("small");
-  note.textContent = "SFX hasil generasi fal.ai · tautan media dapat kedaluwarsa";
+  note.textContent = "SFX dibuat secara lokal oleh ComfyUI.";
   container.append(audio, note);
 }
 
@@ -244,9 +244,8 @@ function setScriptJobRunning(isRunning) {
 
 function configLabel(type) {
   if (!providerConfig) return "Memeriksa konfigurasi server…";
-  if (!providerConfig.keyConfigured) return "Belum aktif — server perlu FAL_KEY.";
   const selected = providerConfig[type];
-  return selected?.ready ? `Siap · ${selected.model}` : "Model belum dikonfigurasi dengan benar.";
+  return selected?.ready ? `Siap · ${selected.model}` : (selected?.model || "Layanan AI lokal belum siap.");
 }
 
 let providerConfig = null;
@@ -257,13 +256,11 @@ async function checkProviderConfig() {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     providerConfig = data;
     renderJobStatuses(project.scenes[activeScene]);
-    if (data.configurationError) {
-      $("#audio-notice").textContent = `ⓘ  Konfigurasi fal.ai tidak valid: ${data.configurationError}`;
-    } else if (!data.keyConfigured) {
-      $("#audio-notice").textContent = "ⓘ  AI belum aktif karena FAL_KEY belum diatur pada server. Tidak ada biaya sampai kamu menambahkan kunci dan meminta generasi.";
-    } else {
-      $("#audio-notice").textContent = `ⓘ  fal.ai aktif · Naskah: ${data.script.model} · Video: ${data.video.model} · SFX: ${data.sfx.model}. Generasi dapat memakai saldo akun fal.ai.`;
-    }
+    const scriptStatus = data.script.ready ? `Ollama siap (${data.script.model})` : data.script.model;
+    const videoStatus = data.video.ready ? "workflow video ComfyUI siap" : data.video.model;
+    const sfxStatus = data.sfx.ready ? "workflow SFX ComfyUI siap" : data.sfx.model;
+    const configuration = data.configurationError ? `Konfigurasi lokal salah: ${data.configurationError}. ` : "";
+    $("#audio-notice").textContent = `ⓘ  ${configuration}Mode lokal · ${scriptStatus}; ${videoStatus}; ${sfxStatus}. Tidak ada panggilan cloud atau biaya API.`;
   } catch (error) {
     providerConfig = null;
     $("#video-status").textContent = "Server AI tidak terjangkau. Jalankan node server.js.";
@@ -308,7 +305,7 @@ async function submitGenerationForScene(type, scene) {
     ? `${scene.visual}. Naskah adegan: ${scene.narration}. Animasi orisinal, arahan gaya ${project.style}; jaga identitas karakter dan kontinuitas dengan adegan sebelumnya. Tanpa teks, subtitle, logo, atau karakter berhak cipta.`
     : `${scene.sfx}. Buat sound effect/ambience yang paling cocok dan menarik untuk momen ini; jangan tambahkan musik atau ucapan.`;
   if (scene[type === "video" ? "videoJob" : "sfxJob"]?.status === "COMPLETED") return;
-  setSceneStatus(type, scene, "Mengirim permintaan ke antrean fal.ai…");
+  setSceneStatus(type, scene, "Mengirim workflow ke ComfyUI lokal…");
   const response = await fetch("/api/generations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -522,7 +519,7 @@ async function generateAllProduction() {
     return;
   }
   const sceneSeconds = project.scenes.reduce((sum, scene) => sum + (Number(scene.duration) || 0), 0);
-  const message = `Ini akan mengirim hingga ${pending.length} permintaan berbayar ke fal.ai untuk ${project.scenes.length} adegan. Total durasi klip saat ini ${formatTime(sceneSeconds)} (target naskah ${project.durationMinutes} menit). Biaya tergantung model dan akun provider; harga tidak dapat dipastikan dari aplikasi. Lanjutkan?`;
+  const message = `Ini akan membuat hingga ${pending.length} file lokal untuk ${project.scenes.length} adegan, total klip ${formatTime(sceneSeconds)} (target naskah ${project.durationMinutes} menit). Komputer bisa bekerja lama atau kehabisan memori, tetapi aplikasi tidak mengirim permintaan ke cloud berbayar. Lanjutkan?`;
   if (!window.confirm(message)) return;
   productionRunning = true;
   $("#generate-production").disabled = true;
@@ -530,9 +527,9 @@ async function generateAllProduction() {
   progress.hidden = false;
   let completed = 0;
   let failed = 0;
-  progress.textContent = `Menyiapkan ${pending.length} permintaan AI…`;
+  progress.textContent = `Menyiapkan ${pending.length} permintaan ke komputer ini…`;
   let next = 0;
-  const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+  const workers = Array.from({ length: Math.min(1, pending.length) }, async () => {
     while (next < pending.length) {
       const task = pending[next];
       next += 1;
