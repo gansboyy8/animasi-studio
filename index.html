@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="lib/story-plan.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -45,13 +46,18 @@
           <div class="panel idea-panel">
             <div class="panel-top"><div class="step"><b>01</b> MULAI DARI IDE</div><span class="draft"><i></i> Draft lokal</span></div>
             <label for="idea">Ceritakan ide yang ada di kepalamu</label><p class="hint">Bisa satu kalimat, bisa juga cerita lengkap. Nanti bisa kamu ubah lagi.</p>
+            <label class="duration-label" for="duration-minutes">Target durasi film</label>
+            <div class="duration-control"><input id="duration-minutes" type="number" min="1" max="10" step="1" value="1" inputmode="numeric" aria-describedby="duration-hint"><span>menit</span><small id="duration-hint">1–10 menit · klip dibagi otomatis menjadi adegan 4–8 detik</small></div>
             <textarea id="idea" maxlength="1200" placeholder="Contoh: Seorang anak menemukan bintang kecil yang jatuh di halaman rumahnya...">Seekor kucing kecil bernama Momo menemukan pintu rahasia di balik lemari tua. Di balik pintu itu ada taman malam yang kehilangan semua bintangnya. Momo berangkat mencari cahaya bersama kunang-kunang pemberani.</textarea>
-            <div class="idea-meta"><span id="char-count">0 / 1.200</span><span>✦ Draft contoh di perangkatmu</span></div>
-            <button class="button primary generate" id="generate" type="button"><span>✦</span> Susun draft cerita <b>→</b></button>
+            <div class="idea-meta"><span id="char-count">0 / 1.200</span><span id="duration-summary">Target: 1 menit · 8 klip pendek</span></div>
+            <button class="button primary generate" id="generate" type="button"><span>✦</span> Buat naskah AI &amp; storyboard <b>→</b></button>
+            <div class="script-status" id="script-status" role="status">Contoh lokal, bukan hasil AI. Tulis ide dan durasi, lalu buat naskah AI.</div>
             <div class="divider"></div>
-            <div class="script-head"><div><div class="step"><b>02</b> NASKAH AWAL</div><h2>Premis &amp; sinopsis</h2></div><span class="editable">Bisa dikoreksi ↗</span></div>
+            <div class="script-head"><div><div class="step"><b>02</b> NASKAH AI</div><h2 id="story-title">Premis &amp; sinopsis</h2></div><span class="editable">Bisa dikoreksi ↗</span></div>
+            <p class="story-synopsis" id="story-synopsis">Saat sebuah taman malam kehilangan bintang-bintangnya, Momo si kucing mungil mengikuti cahaya kunang-kunang menuju dunia rahasia.</p>
+            <div class="script-meta"><span id="script-length">Naskah AI menargetkan sekitar 130 kata/menit</span><span id="script-runtime"></span></div>
             <textarea class="script" id="script" aria-label="Premis dan sinopsis" rows="4">Saat sebuah taman malam kehilangan bintang-bintangnya, Momo si kucing mungil mengikuti cahaya kunang-kunang menuju dunia rahasia. Petualangan mereka mengajarkan bahwa cahaya paling berani sering muncul ketika kita saling membantu.</textarea>
-            <div class="script-meta"><span>Draft lokal — bukan hasil generasi AI</span><button id="regenerate">↻ Susun ulang dari ide</button></div>
+            <div class="script-meta"><span id="script-origin">Contoh lokal — belum dibuat oleh AI</span><button id="regenerate">↻ Buat ulang dengan AI</button></div>
           </div>
           <div class="panel preview-panel">
             <div class="preview-head"><div><div class="step"><b>05</b> PRATINJAU CERITA</div><strong id="preview-title">Taman tanpa bintang</strong></div><span class="preview-label"><i></i> PRATINJAU</span></div>
@@ -68,8 +74,9 @@
           </div>
         </section>
         <section class="storyboard" id="storyboard">
-          <div class="section-head"><div><div class="step"><b>03</b> RANGKAIAN ADEGAN</div><h2>Storyboard <small id="scene-total">(4 adegan)</small></h2></div><button class="button outline" id="add-scene">＋ &nbsp;Tambah adegan</button></div>
-          <div class="scenes" id="scenes"></div><p class="section-note">Pilih adegan untuk mengubah pratinjau. Klik teks untuk mengoreksi naskah dan deskripsi visual.</p>
+          <div class="section-head"><div><div class="step"><b>03</b> RANGKAIAN ADEGAN</div><h2>Storyboard <small id="scene-total">(4 adegan)</small></h2></div><div class="storyboard-actions"><button class="button primary" id="generate-production" type="button" disabled>✦ &nbsp;Buat semua video + SFX AI</button><button class="button outline" id="add-scene">＋ &nbsp;Tambah adegan</button></div></div>
+          <div class="production-progress" id="production-progress" role="status" hidden></div>
+          <div class="scenes" id="scenes"></div><p class="section-note">Pilih adegan untuk mengubah pratinjau. Koreksi judul, visual, narasi, dan arahan SFX sebelum produksi.</p>
         </section>
         <section class="production">
           <div class="panel production-panel" id="gaya"><div class="step"><b>04</b> ARAH VISUAL</div><div class="subhead"><div><h2>Gaya animasi</h2><p>Pilih arahan visual untuk draft-mu.</p></div><span class="chip">Bisa diganti kapan saja</span></div>
@@ -87,7 +94,7 @@
             <div class="audio-notice" id="audio-notice">ⓘ &nbsp; Narasi memakai fitur suara bawaan browser bila didukung. SFX AI memerlukan konfigurasi server.</div>
           </div>
         </section>
-        <section class="how" id="cara-kerja"><i>✦</i><div><b>AI generatif dengan fal.ai</b><p>Server mengirim permintaan video dan SFX ke antrean fal.ai hanya setelah kamu menekan tombol generate. Kunci API tetap di server. Penyedia dapat mengenakan biaya setelah kunci ditambahkan; pantau paket dan penggunaan akunmu.</p></div><button id="clear">Mulai dari awal ↗</button></section>
+        <section class="how" id="cara-kerja"><i>✦</i><div><b>AI generatif dengan fal.ai</b><p>Naskah memakai fal.ai Any LLM; klip animasi dan SFX dibuat per adegan melalui antrean fal.ai setelah kamu menekan tombol. Produksi semua adegan meminta konfirmasi biaya. Kunci API tetap di server. Penyedia dapat mengenakan biaya; pantau paket dan penggunaan akunmu.</p></div><button id="clear">Mulai dari awal ↗</button></section>
         <footer>Animasi Studio Gan <b>·</b> ruang untuk imajinasi <span>Prototipe kreatif <i></i> Data tersimpan di perangkat ini</span></footer>
       </div>
     </main>

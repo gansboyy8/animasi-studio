@@ -1,9 +1,16 @@
 "use strict";
 
+(() => {
 const STORAGE_KEY = "animasi-studio-gan-project-v1";
+const { buildClipPlan, wordCount } = window.AnimasiStoryPlan;
 const initialProject = {
   idea: "Seekor kucing kecil bernama Momo menemukan pintu rahasia di balik lemari tua. Di balik pintu itu ada taman malam yang kehilangan semua bintangnya. Momo berangkat mencari cahaya bersama kunang-kunang pemberani.",
   script: "Saat sebuah taman malam kehilangan bintang-bintangnya, Momo si kucing mungil mengikuti cahaya kunang-kunang menuju dunia rahasia. Petualangan mereka mengajarkan bahwa cahaya paling berani sering muncul ketika kita saling membantu.",
+  synopsis: "Saat sebuah taman malam kehilangan bintang-bintangnya, Momo si kucing mungil mengikuti cahaya kunang-kunang menuju dunia rahasia.",
+  title: "Premis & sinopsis",
+  durationMinutes: 1,
+  scriptGenerated: false,
+  scriptJob: null,
   style: "paper",
   sounds: [true, true, false],
   scenes: [
@@ -22,6 +29,9 @@ let playing = false;
 let muted = true;
 let playTimer;
 let toastTimer;
+let scriptJobRunning = false;
+let productionRunning = false;
+const activePolls = new Map();
 
 function loadProject() {
   try {
@@ -30,6 +40,11 @@ function loadProject() {
       return {
         ...initialProject,
         ...saved,
+        synopsis: saved.synopsis || initialProject.synopsis,
+        title: saved.title || initialProject.title,
+        durationMinutes: saved.durationMinutes || initialProject.durationMinutes,
+        scriptGenerated: Boolean(saved.scriptGenerated),
+        scriptJob: saved.scriptJob || null,
         scenes: saved.scenes.map((scene) => ({ ...scene, clientId: scene.clientId || createSceneId() }))
       };
     }
@@ -85,13 +100,44 @@ function renderScenes() {
         <div class="scene-title-row"><input class="scene-title" aria-label="Judul adegan ${index + 1}" value="${escapeHTML(scene.title)}"><button class="scene-delete" type="button" aria-label="Hapus adegan ${index + 1}" title="Hapus adegan">×</button></div>
         <p class="scene-location">${escapeHTML(scene.location)}</p>
         <textarea class="scene-visual" aria-label="Deskripsi visual adegan ${index + 1}" rows="2">${escapeHTML(scene.visual)}</textarea>
+        <textarea class="scene-narration" aria-label="Narasi adegan ${index + 1}" rows="2">${escapeHTML(scene.narration)}</textarea>
         <div class="scene-foot"><span>${Number(scene.duration) || 0} detik</span><label class="sfx-edit">♫ <input class="scene-sfx" aria-label="Deskripsi SFX adegan ${index + 1}" value="${escapeHTML(scene.sfx)}"></label></div>
       </div>`;
     container.append(card);
   });
   $("#nav-count").textContent = String(project.scenes.length);
   $("#scene-total").textContent = `(${project.scenes.length} adegan)`;
+  $("#generate-production").disabled = !project.scriptGenerated || productionRunning || project.scenes.length === 0;
+  $("#story-title").textContent = project.title;
+  $("#story-synopsis").textContent = project.synopsis;
+  $("#duration-minutes").value = String(project.durationMinutes);
+  updateDurationSummary();
   updatePreview();
+}
+
+function getMinutesFromInput() {
+  const parsed = Number($("#duration-minutes").value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10) {
+    throw new RangeError("Durasi film harus bilangan bulat dari 1 sampai 10 menit.");
+  }
+  return parsed;
+}
+
+function planClipDurations(minutes) {
+  return buildClipPlan(minutes).clipSeconds;
+}
+
+function updateDurationSummary() {
+  const summary = $("#duration-summary");
+  try {
+    const minutes = getMinutesFromInput();
+    const count = planClipDurations(minutes).length;
+    summary.textContent = `Target ${minutes} menit · ${count} klip video + ${count} SFX`;
+    summary.classList.remove("invalid");
+  } catch (error) {
+    summary.textContent = error.message;
+    summary.classList.add("invalid");
+  }
 }
 
 function formatTime(seconds) {
@@ -179,10 +225,21 @@ function renderJobStatuses(scene) {
   if (!scene) {
     $("#video-status").textContent = "Tulis ide dan tambahkan adegan untuk memulai.";
     $("#sfx-status").textContent = "Belum ada adegan aktif.";
+    $("#generate-video").disabled = true;
+    $("#generate-sfx").disabled = true;
     return;
   }
   $("#video-status").textContent = scene.videoUrl ? "Video AI siap diputar." : (jobLabel(scene.videoJob, "video") || configLabel("video"));
   $("#sfx-status").textContent = scene.sfxUrl ? "SFX AI siap diputar." : (jobLabel(scene.sfxJob, "SFX") || configLabel("sfx"));
+  $("#generate-video").disabled = !project.scriptGenerated || Boolean(scene.videoUrl) || Boolean(scene.videoJob && ["IN_QUEUE", "IN_PROGRESS"].includes(scene.videoJob.status));
+  $("#generate-sfx").disabled = !project.scriptGenerated || Boolean(scene.sfxUrl) || Boolean(scene.sfxJob && ["IN_QUEUE", "IN_PROGRESS"].includes(scene.sfxJob.status));
+  $("#generate-production").disabled = !project.scriptGenerated || productionRunning || project.scenes.length === 0;
+}
+
+function setScriptJobRunning(isRunning) {
+  scriptJobRunning = isRunning;
+  $("#generate").disabled = isRunning;
+  $("#regenerate").disabled = isRunning;
 }
 
 function configLabel(type) {
@@ -205,7 +262,7 @@ async function checkProviderConfig() {
     } else if (!data.keyConfigured) {
       $("#audio-notice").textContent = "ⓘ  AI belum aktif karena FAL_KEY belum diatur pada server. Tidak ada biaya sampai kamu menambahkan kunci dan meminta generasi.";
     } else {
-      $("#audio-notice").textContent = `ⓘ  fal.ai aktif · Video: ${data.video.model} · SFX: ${data.sfx.model}. Generasi dapat memakai saldo akun fal.ai.`;
+      $("#audio-notice").textContent = `ⓘ  fal.ai aktif · Naskah: ${data.script.model} · Video: ${data.video.model} · SFX: ${data.sfx.model}. Generasi dapat memakai saldo akun fal.ai.`;
     }
   } catch (error) {
     providerConfig = null;
@@ -233,41 +290,61 @@ async function startGeneration(type) {
   const generateButton = $(`#generate-${type}`);
   if (generateButton.disabled) return;
   generateButton.disabled = true;
-  const styleNames = { paper: "ilustrasi dongeng kertas 2D bertekstur lembut", clay: "animasi clay stop-motion yang hangat", dream: "animasi 2D seperti mimpi dengan warna ekspresif" };
-  const prompt = type === "video"
-    ? `${scene.visual}. Adegan animasi orisinal, ${styleNames[project.style] || styleNames.paper}. Hindari teks, subtitle, logo, dan meniru film atau karakter berhak cipta.`
-    : `Buat sound effect pendek tanpa musik atau ucapan: ${scene.sfx}. Konteks adegan: ${scene.visual}`;
-  setJobStatus(type, "Mengirim permintaan ke antrean fal.ai…");
   try {
-    const response = await fetch("/api/generations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, prompt })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || `Server menolak permintaan (HTTP ${response.status}).`);
-    const job = { id: data.id, status: data.status, queuePosition: data.queuePosition };
-    if (type === "video") scene.videoJob = job;
-    else scene.sfxJob = job;
+    await submitGenerationForScene(type, scene);
+  } catch (error) {
+    const property = type === "video" ? "videoJob" : "sfxJob";
+    scene[property] = { status: "FAILED", error: error.message };
     saveProject();
     renderJobStatuses(scene);
-    showToast(`${type === "video" ? "Video" : "SFX"} masuk antrean fal.ai. Tunggu statusnya di panel.`);
-    void pollGeneration(type, scene.clientId, job.id);
-  } catch (error) {
-    setJobStatus(type, error.message);
     showToast(error.message);
-  } finally {
-    generateButton.disabled = false;
   }
+  if (scene === project.scenes[activeScene]) renderJobStatuses(scene);
+}
+
+async function submitGenerationForScene(type, scene) {
+  const durationSeconds = Number(scene.duration);
+  const prompt = type === "video"
+    ? `${scene.visual}. Naskah adegan: ${scene.narration}. Animasi orisinal, arahan gaya ${project.style}; jaga identitas karakter dan kontinuitas dengan adegan sebelumnya. Tanpa teks, subtitle, logo, atau karakter berhak cipta.`
+    : `${scene.sfx}. Buat sound effect/ambience yang paling cocok dan menarik untuk momen ini; jangan tambahkan musik atau ucapan.`;
+  if (scene[type === "video" ? "videoJob" : "sfxJob"]?.status === "COMPLETED") return;
+  setSceneStatus(type, scene, "Mengirim permintaan ke antrean fal.ai…");
+  const response = await fetch("/api/generations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type, prompt, durationSeconds })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Server menolak permintaan (HTTP ${response.status}).`);
+  const job = { id: data.id, status: data.status, queuePosition: data.queuePosition };
+  if (type === "video") scene.videoJob = job;
+  else scene.sfxJob = job;
+  saveProject();
+  if (scene === project.scenes[activeScene]) renderJobStatuses(scene);
+  return pollGeneration(type, scene.clientId, job.id);
+}
+
+function setSceneStatus(type, scene, text) {
+  if (scene === project.scenes[activeScene]) setJobStatus(type, text);
 }
 
 function setJobStatus(type, text) {
   $(`#${type === "video" ? "video" : "sfx"}-status`).textContent = text;
 }
 
-async function pollGeneration(type, sceneId, jobId) {
+function pollGeneration(type, sceneId, jobId) {
+  if (activePolls.has(jobId)) return activePolls.get(jobId);
+  const pending = pollGenerationLoop(type, sceneId, jobId).finally(() => {
+    if (activePolls.get(jobId) === pending) activePolls.delete(jobId);
+  });
+  activePolls.set(jobId, pending);
+  return pending;
+}
+
+async function pollGenerationLoop(type, sceneId, jobId) {
   let delayMs = 2000;
   while (true) {
+    if (type === "script" && project.scriptJob?.id !== jobId) return;
     await wait(delayMs);
     try {
       const response = await fetch(`/api/generations/${encodeURIComponent(jobId)}`);
@@ -277,9 +354,46 @@ async function pollGeneration(type, sceneId, jobId) {
         error.statusCode = response.status;
         throw error;
       }
+      delayMs = 2000;
+      if (type === "script") {
+        if (project.scriptJob?.id !== jobId) return;
+        project.scriptJob = { id: job.id, status: job.status, queuePosition: job.queuePosition, error: job.error };
+        if (job.status === "COMPLETED" && job.result?.script) {
+          const generated = job.result.script;
+          project.title = generated.title;
+          project.synopsis = generated.synopsis;
+          project.script = generated.script;
+          project.durationMinutes = generated.durationMinutes;
+          project.scriptGenerated = true;
+          project.scriptJob = { id: job.id, status: "COMPLETED" };
+          project.scenes = generated.scenes.map((item) => ({ ...item, clientId: createSceneId() }));
+          activeScene = 0;
+          $("#script").value = project.script;
+          $("#script-length").textContent = `${generated.wordCount} kata · target ${generated.targetWords} kata`;
+          $("#script-runtime").textContent = `Perkiraan ${generated.estimatedMinutes} menit`;
+          $("#script-origin").textContent = `Naskah AI · ${generated.durationMinutes} menit`;
+          $("#script-status").textContent = "Naskah AI dan storyboard selesai. Koreksi bila perlu, lalu buat semua klip.";
+          renderScenes();
+          saveProject();
+          setScriptJobRunning(false);
+          showToast(`Naskah AI ${generated.durationMinutes} menit selesai · ${project.scenes.length} adegan.`);
+          return job;
+        }
+        if (job.status === "FAILED") {
+          $("#script-status").textContent = `Pembuatan naskah gagal: ${job.error}`;
+          project.scriptJob.error = job.error;
+          saveProject();
+          setScriptJobRunning(false);
+          showToast(job.error || "Pembuatan naskah AI gagal.");
+          return job;
+        }
+        $("#script-status").textContent = job.status === "IN_QUEUE"
+          ? `Naskah AI dalam antrean${Number.isInteger(job.queuePosition) ? ` (${job.queuePosition} di depan)` : ""}…`
+          : "AI sedang menulis naskah dan membagi adegan…";
+        continue;
+      }
       const scene = project.scenes.find((item) => item.clientId === sceneId);
       if (!scene) return;
-      delayMs = 2000;
       const property = type === "video" ? "videoJob" : "sfxJob";
       scene[property] = { id: job.id, status: job.status, queuePosition: job.queuePosition, error: job.error };
       if (job.status === "COMPLETED" && job.result?.urls?.length) {
@@ -300,6 +414,18 @@ async function pollGeneration(type, sceneId, jobId) {
       saveProject();
       if (scene === project.scenes[activeScene]) renderJobStatuses(scene);
     } catch (error) {
+      if (type === "script") {
+        if (error.statusCode === 404) {
+          project.scriptJob = { id: jobId, status: "FAILED", error: error.message };
+          $("#script-status").textContent = `Pelacakan naskah hilang: ${error.message}`;
+          saveProject();
+          setScriptJobRunning(false);
+          return;
+        }
+        delayMs = Math.min(Math.round(delayMs * 1.5), 15000);
+        $("#script-status").textContent = `Status naskah sementara tidak tersedia; akan mencoba lagi. ${error.message}`;
+        continue;
+      }
       const scene = project.scenes.find((item) => item.clientId === sceneId);
       if (scene) {
         if (error.statusCode === 404) {
@@ -333,41 +459,104 @@ function titleFromIdea(idea) {
 }
 
 function makeDraft() {
+  return generateAIScript();
+}
+
+async function generateAIScript() {
   const idea = $("#idea").value.trim();
   if (!idea) {
-    showToast("Tulis ide cerita dulu sebelum menyusun draft.");
+    showToast("Tulis ide cerita dulu sebelum meminta AI membuat naskah.");
     $("#idea").focus();
     return;
   }
-  const fragments = idea.split(/(?<=[.!?])\s+|;\s*/).map((part) => part.trim()).filter(Boolean);
-  const beats = fragments.length > 1 ? fragments.slice(0, 4) : [
-    `Suatu hari, ${idea[0].toLocaleLowerCase("id-ID")}${idea.slice(1)}`,
-    "Sebuah kejadian tak terduga membuka jalan menuju dunia baru.",
-    "Tokoh utama bertemu teman yang membantu menghadapi tantangan.",
-    "Mereka menemukan akhir yang hangat dan penuh harapan."
-  ];
-  const headings = ["Awal yang tak terduga", "Pintu menuju petualangan", "Teman dan tantangan", "Cahaya yang ditemukan"];
-  const locations = ["Pembuka cerita · senja", "Dunia baru · malam", "Perjalanan · malam", "Akhir cerita · fajar"];
-  const sfx = ["Suasana pembuka", "Angin lembut", "Langkah kecil", "Nada harapan"];
+  let durationMinutes;
+  try {
+    durationMinutes = getMinutesFromInput();
+  } catch (error) {
+    $("#script-status").textContent = error.message;
+    showToast(error.message);
+    $("#duration-minutes").focus();
+    return;
+  }
+  if (scriptJobRunning) return;
+  if (project.scriptJob && ["IN_QUEUE", "IN_PROGRESS"].includes(project.scriptJob.status)) {
+    showToast("Pembuatan naskah AI sedang berjalan.");
+    return;
+  }
+  setScriptJobRunning(true);
+  $("#script-status").textContent = `Meminta naskah AI ${durationMinutes} menit…`;
   project.idea = idea;
-  project.scenes = Array.from({ length: 4 }, (_, index) => {
-    const narration = beats[index] || `Petualangan berlanjut: ${beats[beats.length - 1]}`;
-    return {
-      clientId: createSceneId(),
-      title: index === 0 ? titleFromIdea(idea) : headings[index],
-      location: locations[index],
-      duration: [7, 8, 8, 9][index],
-      visual: `${narration} Visual: animasi 2D orisinal, palet hangat dan karakter ekspresif.`,
-      narration,
-      sfx: sfx[index]
-    };
+  project.durationMinutes = durationMinutes;
+  try {
+    const response = await fetch("/api/scripts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea, durationMinutes, style: project.style })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Server menolak permintaan (HTTP ${response.status}).`);
+    if ($("#idea").value.trim() !== idea || Number($("#duration-minutes").value) !== durationMinutes) {
+      $("#script-status").textContent = "Ide atau durasi berubah saat permintaan dikirim. Hasil job ini tidak akan diterapkan; job provider mungkin tetap berjalan.";
+      setScriptJobRunning(false);
+      return;
+    }
+    project.scriptJob = { id: data.id, status: data.status, queuePosition: data.queuePosition, idea, durationMinutes };
+    saveProject();
+    $("#script-status").textContent = `Naskah AI masuk antrean${Number.isInteger(data.queuePosition) ? ` (${data.queuePosition} di depan)` : ""}…`;
+    void pollGeneration("script", "project", data.id);
+  } catch (error) {
+    $("#script-status").textContent = error.message;
+    showToast(error.message);
+    setScriptJobRunning(false);
+  }
+}
+
+async function generateAllProduction() {
+  if (!project.scriptGenerated || !project.scenes.length || productionRunning) return;
+  const pending = project.scenes.flatMap((scene) => [
+    { type: "video", scene },
+    { type: "sfx", scene }
+  ]).filter(({ type, scene }) => scene[type === "video" ? "videoUrl" : "sfxUrl"] == null);
+  if (!pending.length) {
+    showToast("Semua video dan SFX untuk adegan ini sudah dihasilkan.");
+    return;
+  }
+  const sceneSeconds = project.scenes.reduce((sum, scene) => sum + (Number(scene.duration) || 0), 0);
+  const message = `Ini akan mengirim hingga ${pending.length} permintaan berbayar ke fal.ai untuk ${project.scenes.length} adegan. Total durasi klip saat ini ${formatTime(sceneSeconds)} (target naskah ${project.durationMinutes} menit). Biaya tergantung model dan akun provider; harga tidak dapat dipastikan dari aplikasi. Lanjutkan?`;
+  if (!window.confirm(message)) return;
+  productionRunning = true;
+  $("#generate-production").disabled = true;
+  const progress = $("#production-progress");
+  progress.hidden = false;
+  let completed = 0;
+  let failed = 0;
+  progress.textContent = `Menyiapkan ${pending.length} permintaan AI…`;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+    while (next < pending.length) {
+      const task = pending[next];
+      next += 1;
+      try {
+        const jobKey = task.type === "video" ? "videoJob" : "sfxJob";
+        const existingJob = task.scene[jobKey];
+        const job = existingJob && ["IN_QUEUE", "IN_PROGRESS"].includes(existingJob.status)
+          ? await pollGeneration(task.type, task.scene.clientId, existingJob.id)
+          : await submitGenerationForScene(task.type, task.scene);
+        if (job?.status === "FAILED") failed += 1;
+      } catch (error) {
+        failed += 1;
+        const property = task.type === "video" ? "videoJob" : "sfxJob";
+        task.scene[property] = { status: "FAILED", error: error.message };
+        if (task.scene === project.scenes[activeScene]) setSceneStatus(task.type, task.scene, error.message);
+        saveProject();
+      }
+      completed += 1;
+      progress.textContent = `Progres ${completed}/${pending.length} permintaan · ${failed} gagal${completed === pending.length ? (failed ? ". Periksa status adegan untuk mencoba ulang." : ". Semua klip siap.") : "…"}`;
+    }
   });
-  project.script = `${idea} Perjalanan ini menjadi kisah tentang keberanian, rasa ingin tahu, dan arti saling membantu.`;
-  activeScene = 0;
-  $("#script").value = project.script;
-  renderScenes();
-  saveProject();
-  showToast("Draft cerita lokal berhasil disusun. Silakan koreksi setiap bagiannya.");
+  await Promise.all(workers);
+  productionRunning = false;
+  $("#generate-production").disabled = !project.scriptGenerated || project.scenes.length === 0;
 }
 
 function togglePlayback() {
@@ -426,7 +615,7 @@ function speakScript() {
     return;
   }
   window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(project.script || project.scenes[activeScene]?.narration || "");
+  const utterance = new SpeechSynthesisUtterance(project.scenes[activeScene]?.narration || project.script || "");
   utterance.lang = $("#voice").value === "en" ? "en-US" : "id-ID";
   utterance.rate = .94;
   utterance.onstart = () => showToast("Narasi sintetis browser diputar, bukan suara AI.");
@@ -455,13 +644,61 @@ function exportProject() {
 
 $("#idea").value = project.idea;
 $("#script").value = project.script;
+$("#duration-minutes").value = String(project.durationMinutes);
+$("#story-title").textContent = project.title;
+$("#story-synopsis").textContent = project.synopsis;
+$("#script-origin").textContent = project.scriptGenerated ? "Naskah AI · bisa dikoreksi" : "Contoh lokal — belum dibuat oleh AI";
 $("#char-count").textContent = `${project.idea.length.toLocaleString("id-ID")} / 1.200`;
 $$(".style-option").forEach((button) => button.classList.toggle("selected", button.dataset.style === project.style));
 $$(".sound-row input").forEach((input, index) => { input.checked = Boolean(project.sounds[index]); });
 renderScenes();
+if (project.scriptJob?.id && ["IN_QUEUE", "IN_PROGRESS"].includes(project.scriptJob.status)) {
+  setScriptJobRunning(true);
+  $("#script-status").textContent = "Melanjutkan pelacakan naskah AI…";
+  void pollGeneration("script", "project", project.scriptJob.id);
+} else if (project.scriptGenerated) {
+  $("#script-length").textContent = `${wordCount(project.script)} kata`;
+  $("#script-runtime").textContent = `Target ${project.durationMinutes} menit`;
+  $("#script-status").textContent = "Naskah AI tersimpan. Koreksi sebelum membuat video.";
+}
 
 $("#idea").addEventListener("input", (event) => {
   $("#char-count").textContent = `${event.target.value.length.toLocaleString("id-ID")} / 1.200`;
+  const idea = event.target.value.trim();
+  if (idea !== project.idea) {
+    project.idea = idea;
+    if (project.scriptGenerated) {
+      project.scriptGenerated = false;
+      $("#script-status").textContent = "Ide berubah. Buat ulang naskah agar storyboard cocok sebelum produksi.";
+      $("#script-origin").textContent = "Ide berubah — naskah perlu dibuat ulang";
+    }
+    if (project.scriptJob && ["IN_QUEUE", "IN_PROGRESS"].includes(project.scriptJob.status)) {
+      project.scriptJob = null;
+      setScriptJobRunning(false);
+      $("#script-status").textContent = "Ide berubah. Job lama tidak lagi akan ditampilkan; pembuatan provider yang sudah dikirim mungkin tetap berjalan.";
+    }
+    renderJobStatuses(project.scenes[activeScene]);
+    saveProject();
+  }
+});
+$("#duration-minutes").addEventListener("input", () => {
+  updateDurationSummary();
+  const minutes = Number($("#duration-minutes").value);
+  if (Number.isInteger(minutes) && minutes >= 1 && minutes <= 10) {
+    if (minutes !== project.durationMinutes && project.scriptGenerated) {
+      project.scriptGenerated = false;
+      $("#script-status").textContent = "Target durasi berubah. Buat ulang naskah dan storyboard sebelum produksi.";
+      $("#script-origin").textContent = "Durasi berubah — naskah perlu dibuat ulang";
+      renderJobStatuses(project.scenes[activeScene]);
+    }
+    if (project.scriptJob && ["IN_QUEUE", "IN_PROGRESS"].includes(project.scriptJob.status)) {
+      project.scriptJob = null;
+      setScriptJobRunning(false);
+      $("#script-status").textContent = "Durasi berubah. Job naskah lama tidak lagi akan ditampilkan; pembuatan provider yang sudah dikirim mungkin tetap berjalan.";
+    }
+    project.durationMinutes = minutes;
+    saveProject();
+  }
 });
 $("#generate").addEventListener("click", makeDraft);
 $("#regenerate").addEventListener("click", makeDraft);
@@ -475,6 +712,7 @@ $("#scenes").addEventListener("input", (event) => {
   const index = Number(card.dataset.index);
   if (event.target.matches(".scene-title")) project.scenes[index].title = event.target.value;
   if (event.target.matches(".scene-visual")) project.scenes[index].visual = event.target.value;
+  if (event.target.matches(".scene-narration")) project.scenes[index].narration = event.target.value;
   if (event.target.matches(".scene-sfx")) project.scenes[index].sfx = event.target.value;
   saveProject();
   if (index === activeScene) updatePreview();
@@ -527,6 +765,7 @@ $("#play").addEventListener("click", togglePlayback);
 $("#speak").addEventListener("click", speakScript);
 $("#generate-video").addEventListener("click", () => startGeneration("video"));
 $("#generate-sfx").addEventListener("click", () => startGeneration("sfx"));
+$("#generate-production").addEventListener("click", generateAllProduction);
 $("#sound").addEventListener("click", () => {
   muted = !muted;
   $("#sound").classList.toggle("muted", muted);
@@ -541,11 +780,24 @@ $$(".sound-row input").forEach((input, index) => input.addEventListener("change"
 }));
 $("#export").addEventListener("click", exportProject);
 $("#clear").addEventListener("click", () => {
-  project = { idea: "", script: "", style: "paper", sounds: [false, false, false], scenes: [] };
+  setScriptJobRunning(false);
+  scriptJobRunning = false;
+  project = { idea: "", script: "", synopsis: "", title: "Premis & sinopsis", durationMinutes: 1, scriptGenerated: false, scriptJob: null, style: "paper", sounds: [false, false, false], scenes: [] };
   activeScene = 0;
   $("#idea").value = "";
   $("#script").value = "";
+  $("#story-title").textContent = project.title;
+  $("#story-synopsis").textContent = "";
+  $("#script-origin").textContent = "Contoh lokal — belum dibuat oleh AI";
   $("#char-count").textContent = "0 / 1.200";
+  $("#script-length").textContent = "Naskah AI menargetkan sekitar 130 kata/menit";
+  $("#script-runtime").textContent = "";
+  $("#script-status").textContent = "Tulis ide dan durasi, lalu buat naskah AI.";
+  $("#duration-minutes").value = "1";
+  $("#production-progress").hidden = true;
+  $$(".style-option").forEach((button) => button.classList.toggle("selected", button.dataset.style === project.style));
+  $$(".sound-row input").forEach((input) => { input.checked = false; });
+  updateDurationSummary();
   renderScenes();
   saveProject();
   $("#idea").focus();
@@ -568,3 +820,4 @@ project.scenes.forEach((scene) => {
     void pollGeneration("sfx", scene.clientId, scene.sfxJob.id);
   }
 });
+})();

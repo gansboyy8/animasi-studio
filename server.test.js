@@ -2,7 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createServer } = require("./server");
+const { createServer, buildScriptRequest, parseGeneratedScript } = require("./server");
+const { buildClipPlan, validateDurationMinutes } = require("./lib/story-plan");
 
 async function withServer(options, run) {
   const server = createServer(options);
@@ -26,10 +27,128 @@ test("health reports AI disabled without a key and does not call the provider", 
     assert.equal(health.keyConfigured, false);
     assert.equal(health.video.ready, false);
     assert.equal(health.sfx.ready, false);
+    assert.equal(health.script.ready, false);
     const response = await fetch(`${base}/api/generations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "video", prompt: "Animasi pendek" })
+    });
+
+    test("duration planner covers the supported limits with exact 4/6/8 second clips", () => {
+      for (const minutes of [1, 10]) {
+        const plan = buildClipPlan(minutes);
+        assert.equal(plan.totalSeconds, minutes * 60);
+        assert.equal(plan.clipSeconds.reduce((sum, duration) => sum + duration, 0), minutes * 60);
+        assert.ok(plan.clipSeconds.every((duration) => [4, 6, 8].includes(duration)));
+        assert.equal(plan.targetWords, minutes * 130);
+      }
+      assert.equal(buildClipPlan(1).clipSeconds.length, 8);
+      assert.equal(buildClipPlan(10).clipSeconds.length, 75);
+      for (const invalid of [0, -1, 1.5, 11, "abc"]) {
+        assert.throws(() => validateDurationMinutes(invalid), RangeError);
+      }
+    });
+
+    test("script prompts and parser enforce duration-aware output and valid clip counts", () => {
+      const { plan, systemPrompt } = buildScriptRequest("Seekor kucing menemukan taman ajaib.", 1, "clay");
+      assert.equal(plan.totalSeconds, 60);
+      assert.match(systemPrompt, /130 Indonesian words for 1 minutes/);
+      assert.match(systemPrompt, /exactly 8 scenes/);
+      assert.match(systemPrompt, /8s.*8s.*8s.*8s.*8s.*8s.*8s.*4s/);
+      const output = {
+        title: "Momo dan taman",
+        synopsis: "Momo menolong taman malam.",
+        script: Array(130).fill("Momo").join(" "),
+        scenes: plan.clipSeconds.map((duration, index) => ({
+          title: `Adegan ${index + 1}`,
+          location: "Taman malam",
+          narration: "Momo mencari cahaya.",
+          visualPrompt: "Kucing orisinal berjalan di taman malam.",
+          sfxPrompt: "Angin malam dan langkah kaki."
+        }))
+      };
+      const parsed = parseGeneratedScript({ output: JSON.stringify(output) }, plan);
+      assert.equal(parsed.wordCount, 130);
+      assert.equal(parsed.totalSeconds, 60);
+      assert.equal(parsed.scenes.length, 8);
+      assert.deepEqual(parsed.scenes.map((scene) => scene.duration), plan.clipSeconds);
+      assert.throws(() => parseGeneratedScript({ output: "not JSON" }, plan), /JSON/);
+      assert.throws(() => parseGeneratedScript({ output: JSON.stringify({ ...output, scenes: [] }) }, plan), /tepat 8 adegan/);
+      assert.throws(() => parseGeneratedScript({ output: JSON.stringify({ ...output, script: "Terlalu pendek." }) }, plan), /di luar kisaran target/);
+    });
+
+    test("script generation returns an async job and parses the provider response", async () => {
+      const calls = [];
+      const generated = {
+        title: "Momo dan taman",
+        synopsis: "Momo menolong taman malam.",
+        script: Array(130).fill("Momo").join(" "),
+        scenes: buildClipPlan(1).clipSeconds.map((duration, index) => ({
+          title: `Adegan ${index + 1}`,
+          location: "Taman malam",
+          narration: "Momo mencari cahaya.",
+          visualPrompt: "Kucing orisinal berjalan di taman malam.",
+          sfxPrompt: "Angin malam dan langkah kaki."
+        }))
+      };
+      const fetchImpl = async (url, options) => {
+        calls.push({ url: String(url), options });
+        if (options.method === "POST") {
+          const input = JSON.parse(options.body);
+          assert.equal(input.model, "google/gemini-2.5-flash-lite");
+          assert.match(input.system_prompt, /exactly 8 scenes/);
+          assert.match(input.prompt, /Seekor kucing menemukan taman ajaib/);
+          return jsonResponse({
+            request_id: "script-job-1",
+            status_url: "https://queue.fal.run/fal-ai/any-llm/requests/script-job-1/status",
+            response_url: "https://queue.fal.run/fal-ai/any-llm/requests/script-job-1"
+          }, 200);
+        }
+        if (String(url).endsWith("/status")) return jsonResponse({ status: "COMPLETED" });
+        return jsonResponse({ output: JSON.stringify(generated) });
+      };
+      await withServer({ env: { FAL_KEY: "test-secret" }, fetchImpl }, async (base) => {
+        const response = await fetch(`${base}/api/scripts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idea: "Seekor kucing menemukan taman ajaib.", durationMinutes: 1, style: "clay" })
+        });
+        assert.equal(response.status, 202);
+        const submitted = await response.json();
+        assert.equal(submitted.type, "script");
+        const complete = await fetch(`${base}/api/generations/${submitted.id}`).then((result) => result.json());
+        assert.equal(complete.status, "COMPLETED");
+        assert.equal(complete.result.script.durationMinutes, 1);
+        assert.equal(complete.result.script.scenes.length, 8);
+        assert.equal(JSON.stringify(complete).includes("test-secret"), false);
+        assert.equal(calls.length, 3);
+      });
+    });
+
+    test("script endpoint rejects invalid durations and no-key requests without provider calls", async () => {
+      let calls = 0;
+      const fetchImpl = async () => { calls += 1; return jsonResponse({}); };
+      await withServer({ env: {}, fetchImpl }, async (base) => {
+        const noKey = await fetch(`${base}/api/scripts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idea: "Cerita.", durationMinutes: 1 })
+        });
+        assert.equal(noKey.status, 503);
+        assert.match((await noKey.json()).error, /tidak ada permintaan atau biaya/i);
+        assert.equal(calls, 0);
+      });
+      await withServer({ env: { FAL_KEY: "test-secret" }, fetchImpl }, async (base) => {
+        for (const durationMinutes of [0, 1.5, 11]) {
+          const response = await fetch(`${base}/api/scripts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idea: "Cerita.", durationMinutes })
+          });
+          assert.equal(response.status, 400);
+        }
+        assert.equal(calls, 0);
+      });
     });
     assert.equal(response.status, 503);
     assert.match((await response.json()).error, /Tidak ada permintaan atau biaya/);
@@ -120,6 +239,38 @@ test("video generation uses the configured Veo-compatible prompt fields and retu
         status_url: "https://queue.fal.run/fal-ai/veo3/requests/video-job-1/status",
         response_url: "https://queue.fal.run/fal-ai/veo3/requests/video-job-1"
       });
+
+      test("video clip duration is validated and passed through to Veo", async () => {
+        let submittedDuration;
+        const fetchImpl = async (url, options) => {
+          if (options.method === "POST") {
+            submittedDuration = JSON.parse(options.body).duration;
+            return jsonResponse({
+              request_id: "video-duration-job",
+              status_url: "https://queue.fal.run/fal-ai/veo3/requests/video-duration-job/status",
+              response_url: "https://queue.fal.run/fal-ai/veo3/requests/video-duration-job"
+            });
+          }
+          return jsonResponse({ status: "IN_PROGRESS" });
+        };
+        await withServer({ env: { FAL_KEY: "test-secret" }, fetchImpl }, async (base) => {
+          for (const durationSeconds of [4, 6]) {
+            const response = await fetch(`${base}/api/generations`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ type: "video", prompt: "Adegan animasi.", durationSeconds })
+            });
+            assert.equal(response.status, 202);
+            assert.equal(submittedDuration, `${durationSeconds}s`);
+          }
+          const invalid = await fetch(`${base}/api/generations`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: "video", prompt: "Adegan animasi.", durationSeconds: 5 })
+          });
+          assert.equal(invalid.status, 400);
+        });
+      });
     }
     if (String(url).endsWith("/status")) return jsonResponse({ status: "COMPLETED" });
     return jsonResponse({ video: { url: "https://v3.fal.media/files/clip.mp4" } });
@@ -177,7 +328,9 @@ test("invalid generation input is rejected before contacting the provider", asyn
     for (const payload of [
       { type: "image", prompt: "not supported" },
       { type: "video", prompt: " " },
-      { type: "sfx", prompt: "x".repeat(6001) }
+      { type: "sfx", prompt: "x".repeat(6001) },
+      { type: "video", prompt: "Zero duration.", durationSeconds: 0 },
+      { type: "video", prompt: "Null duration.", durationSeconds: null }
     ]) {
       const response = await fetch(`${base}/api/generations`, {
         method: "POST",

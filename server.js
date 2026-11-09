@@ -4,6 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { buildClipPlan, MAX_MINUTES, wordCount } = require("./lib/story-plan");
 
 const ROOT = __dirname;
 const MAX_BODY_BYTES = 24 * 1024;
@@ -36,16 +37,33 @@ function readObjectSetting(value, fallback, name) {
   return parsed;
 }
 
-function modelSettings(env, type) {
+function modelSettings(env, type, options = {}) {
   if (type === "video") {
     return {
       model: env.FAL_VIDEO_MODEL_ID || "fal-ai/veo3",
       input: {
-        duration: "8s",
+        duration: `${options.durationSeconds || 8}s`,
         aspect_ratio: "16:9",
         resolution: "720p",
         generate_audio: false,
-        ...readObjectSetting(env.FAL_VIDEO_INPUT_JSON, {}, "FAL_VIDEO_INPUT_JSON")
+        ...readObjectSetting(env.FAL_VIDEO_INPUT_JSON, {}, "FAL_VIDEO_INPUT_JSON"),
+        duration: `${options.durationSeconds || 8}s`,
+        generate_audio: false
+      },
+      promptField: "prompt"
+    };
+  }
+  if (type === "script") {
+    return {
+      model: env.FAL_SCRIPT_MODEL_ID || "fal-ai/any-llm",
+      input: {
+        system_prompt: "",
+        prompt: "",
+        model: env.FAL_SCRIPT_LLM_MODEL || "google/gemini-2.5-flash-lite",
+        temperature: 0.65,
+        max_tokens: 12000,
+        priority: "latency",
+        ...readObjectSetting(env.FAL_SCRIPT_INPUT_JSON, {}, "FAL_SCRIPT_INPUT_JSON")
       },
       promptField: "prompt"
     };
@@ -53,11 +71,91 @@ function modelSettings(env, type) {
   return {
     model: env.FAL_SFX_MODEL_ID || "fal-ai/elevenlabs/sound-effects",
     input: {
-      duration_seconds: 4,
+      duration_seconds: Math.min(options.durationSeconds || 4, 8),
       enable_safety_checker: true,
-      ...readObjectSetting(env.FAL_SFX_INPUT_JSON, {}, "FAL_SFX_INPUT_JSON")
+      ...readObjectSetting(env.FAL_SFX_INPUT_JSON, {}, "FAL_SFX_INPUT_JSON"),
+      duration_seconds: Math.min(options.durationSeconds || 4, 8),
+      enable_safety_checker: true
     },
     promptField: "text"
+  };
+}
+
+function buildScriptRequest(idea, durationMinutes, style) {
+  const plan = buildClipPlan(durationMinutes);
+  const styleLabels = {
+    paper: "paper-cut storybook animation, soft tactile paper texture",
+    clay: "warm expressive stop-motion clay animation",
+    dream: "colorful expressive 2D dreamlike animation"
+  };
+  const systemPrompt = [
+    "You are a professional Indonesian animated-short-film screenwriter and storyboard artist.",
+    "Create an original family-friendly story. Respond with valid JSON only, no Markdown fences and no text outside JSON.",
+    "Use this exact JSON shape: {\"title\":\"...\",\"synopsis\":\"...\",\"script\":\"...\",\"scenes\":[{\"title\":\"...\",\"location\":\"...\",\"narration\":\"...\",\"visualPrompt\":\"...\",\"sfxPrompt\":\"...\"}]}",
+    `The full spoken script must target approximately ${plan.targetWords} Indonesian words for ${plan.minutes} minutes at about ${plan.targetWords / plan.minutes} words per minute. Include natural narration and character dialogue in the script and scene narration.`,
+    `Return exactly ${plan.clipSeconds.length} scenes, one per video clip, in chronological story order. Keep each scene concise and visually filmable. Preserve character design, setting details, and continuity between scene prompts.`,
+    "Every visualPrompt must be an original self-contained animation shot description that repeats the key character identity and visual continuity; no copyrighted characters, logos, subtitles, or on-screen text.",
+    "Every sfxPrompt must describe the most suitable specific sound effect or ambience for that scene (not music or speech), in natural language; choose creatively based on the action and mood.",
+    `Clip durations in order are ${plan.clipSeconds.map((seconds) => `${seconds}s`).join(", ")}; the combined video clips must total exactly ${plan.minutes} minutes.`,
+    `Animation style direction: ${styleLabels[style] || styleLabels.paper}.`
+  ].join(" ");
+  const prompt = `Story idea from the user:\n${idea}\n\nCreate the requested script and storyboard. Make the ending satisfying and proportion the story beats across the requested runtime.`;
+  return { plan, systemPrompt, prompt };
+}
+
+function parseGeneratedScript(result, plan) {
+  if (typeof result.output !== "string" || !result.output.trim()) {
+    throw new Error("Model skrip tidak mengembalikan teks output.");
+  }
+  const output = result.output.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("Output skrip AI bukan objek JSON yang valid.");
+  let parsed;
+  try {
+    parsed = JSON.parse(output.slice(start, end + 1));
+  } catch {
+    throw new Error("Output skrip AI tidak dapat dibaca sebagai JSON.");
+  }
+  if (typeof parsed.title !== "string" || !parsed.title.trim()
+    || typeof parsed.synopsis !== "string" || !parsed.synopsis.trim()
+    || typeof parsed.script !== "string" || !parsed.script.trim()
+    || !Array.isArray(parsed.scenes) || parsed.scenes.length !== plan.clipSeconds.length) {
+    throw new Error(`Skrip AI tidak lengkap: dibutuhkan judul, sinopsis, naskah, dan tepat ${plan.clipSeconds.length} adegan.`);
+  }
+  const count = wordCount(parsed.script);
+  const minWords = Math.floor(plan.targetWords * 0.75);
+  const maxWords = Math.ceil(plan.targetWords * 1.25);
+  if (count < minWords || count > maxWords) {
+    throw new Error(`Panjang naskah AI ${count} kata, di luar kisaran target ${minWords}–${maxWords} kata untuk ${plan.minutes} menit. Coba buat ulang.`);
+  }
+  const scenes = parsed.scenes.map((scene, index) => {
+    for (const field of ["title", "location", "narration", "visualPrompt", "sfxPrompt"]) {
+      if (typeof scene[field] !== "string" || !scene[field].trim()) {
+        throw new Error(`Adegan ${index + 1} belum memiliki ${field}. Coba buat ulang naskah.`);
+      }
+      const fieldLimit = field === "visualPrompt" ? 1800 : field === "narration" ? 1200 : 800;
+      if (scene[field].length > fieldLimit) throw new Error(`Bagian ${field} adegan ${index + 1} terlalu panjang.`);
+    }
+    return {
+      title: scene.title.trim().slice(0, 120),
+      location: scene.location.trim().slice(0, 160),
+      narration: scene.narration.trim(),
+      visual: scene.visualPrompt.trim(),
+      sfx: scene.sfxPrompt.trim(),
+      duration: plan.clipSeconds[index]
+    };
+  });
+  return {
+    title: parsed.title.trim().slice(0, 120),
+    synopsis: parsed.synopsis.trim().slice(0, 2000),
+    script: parsed.script.trim(),
+    wordCount: count,
+    targetWords: plan.targetWords,
+    estimatedMinutes: Math.round(count / 130 * 10) / 10,
+    durationMinutes: plan.minutes,
+    totalSeconds: plan.totalSeconds,
+    scenes
   };
 }
 
@@ -170,15 +268,18 @@ function createServer({ env = process.env, fetchImpl = globalThis.fetch, jobs = 
       const keyReady = Boolean(env.FAL_KEY);
       let video;
       let sfx;
+      let script;
       try {
         video = modelSettings(env, "video");
         sfx = modelSettings(env, "sfx");
+        script = modelSettings(env, "script");
       } catch (error) {
         return jsonResponse(res, 200, {
           provider: "fal.ai",
           keyConfigured: keyReady,
           video: { model: env.FAL_VIDEO_MODEL_ID || "fal-ai/veo3", ready: false },
           sfx: { model: env.FAL_SFX_MODEL_ID || "fal-ai/elevenlabs/sound-effects", ready: false },
+          script: { model: env.FAL_SCRIPT_MODEL_ID || "fal-ai/any-llm", ready: false },
           configurationError: error.message
         });
       }
@@ -186,8 +287,58 @@ function createServer({ env = process.env, fetchImpl = globalThis.fetch, jobs = 
         provider: "fal.ai",
         keyConfigured: keyReady,
         video: { model: video.model, ready: keyReady && validModelId(video.model) },
-        sfx: { model: sfx.model, ready: keyReady && validModelId(sfx.model) }
+        sfx: { model: sfx.model, ready: keyReady && validModelId(sfx.model) },
+        script: { model: script.model, llmModel: script.input.model, ready: keyReady && validModelId(script.model) }
       });
+    }
+
+    if (req.method === "POST" && pathname === "/api/scripts") {
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        return jsonResponse(res, error.status || 400, { error: error.message });
+      }
+      const idea = typeof body.idea === "string" ? body.idea.trim() : "";
+      const style = typeof body.style === "string" ? body.style : "paper";
+      if (!idea || idea.length > 1200) return jsonResponse(res, 400, { error: "Ide wajib diisi dan maksimal 1.200 karakter." });
+      let request;
+      try {
+        request = buildScriptRequest(idea, body.durationMinutes, style);
+      } catch (error) {
+        return jsonResponse(res, 400, { error: error.message });
+      }
+      if (!env.FAL_KEY) {
+        return jsonResponse(res, 503, { error: "Pembuatan naskah AI belum dikonfigurasi. Isi FAL_KEY di .env server; tidak ada permintaan atau biaya yang dibuat." });
+      }
+      let settings;
+      try {
+        settings = modelSettings(env, "script");
+      } catch (error) {
+        return jsonResponse(res, 500, { error: error.message });
+      }
+      if (!validModelId(settings.model)) return jsonResponse(res, 500, { error: "ID model skrip tidak valid. Periksa konfigurasi server." });
+      try {
+        const upstream = await providerRequest(
+          `https://queue.fal.run/${settings.model}`,
+          env.FAL_KEY,
+          fetchImpl,
+          { method: "POST", body: JSON.stringify({ ...settings.input, prompt: request.prompt, system_prompt: request.systemPrompt }) }
+        );
+        if (typeof upstream.request_id !== "string" || !upstream.request_id) throw new Error("fal.ai tidak mengembalikan ID antrean.");
+        if (!isQueueUrl(upstream.status_url) || !isQueueUrl(upstream.response_url)) throw new Error("fal.ai mengembalikan alamat antrean yang tidak valid.");
+        const id = randomUUID();
+        const job = {
+          id, type: "script", model: settings.model, requestId: upstream.request_id,
+          statusUrl: upstream.status_url, responseUrl: upstream.response_url,
+          status: "IN_QUEUE", queuePosition: Number.isInteger(upstream.queue_position) ? upstream.queue_position : null,
+          createdAt: new Date().toISOString(), result: null, error: null, plan: request.plan
+        };
+        jobs.set(id, job);
+        return jsonResponse(res, 202, publicJob(job));
+      } catch (error) {
+        return jsonResponse(res, 502, { error: `Permintaan skrip ke fal.ai gagal: ${error.message}` });
+      }
     }
 
     if (req.method === "POST" && pathname === "/api/generations") {
@@ -206,9 +357,13 @@ function createServer({ env = process.env, fetchImpl = globalThis.fetch, jobs = 
       if (!env.FAL_KEY) {
         return jsonResponse(res, 503, { error: "Generasi AI belum dikonfigurasi. Isi FAL_KEY di file .env server untuk mengaktifkan fal.ai. Tidak ada permintaan atau biaya yang dibuat." });
       }
+      const durationSeconds = body.durationSeconds === undefined ? 8 : Number(body.durationSeconds);
+      if (!Number.isInteger(durationSeconds) || ![4, 6, 8].includes(durationSeconds)) {
+        return jsonResponse(res, 400, { error: "Durasi klip harus 4, 6, atau 8 detik." });
+      }
       let settings;
       try {
-        settings = modelSettings(env, type);
+        settings = modelSettings(env, type, { durationSeconds });
       } catch (error) {
         return jsonResponse(res, 500, { error: error.message });
       }
@@ -268,13 +423,23 @@ function createServer({ env = process.env, fetchImpl = globalThis.fetch, jobs = 
             job.error = String(status.error).slice(0, 500);
           } else {
             const result = await providerRequest(job.responseUrl, env.FAL_KEY, fetchImpl);
-            const urls = collectMediaUrls(result);
-            if (!urls.length) {
-              job.status = "FAILED";
-              job.error = "fal.ai selesai tetapi tidak mengembalikan URL media yang bisa diputar.";
+            if (job.type === "script") {
+              try {
+                job.result = { script: parseGeneratedScript(result, job.plan) };
+                job.status = "COMPLETED";
+              } catch (error) {
+                job.status = "FAILED";
+                job.error = error.message;
+              }
             } else {
-              job.status = "COMPLETED";
-              job.result = { urls, raw: result };
+              const urls = collectMediaUrls(result);
+              if (!urls.length) {
+                job.status = "FAILED";
+                job.error = "fal.ai selesai tetapi tidak mengembalikan URL media yang bisa diputar.";
+              } else {
+                job.status = "COMPLETED";
+                job.result = { urls };
+              }
             }
           }
         } else if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
@@ -352,7 +517,7 @@ function publicJob(job) {
     status: job.status,
     queuePosition: job.queuePosition,
     createdAt: job.createdAt,
-    result: job.result ? { urls: job.result.urls } : null,
+    result: job.result ? (job.type === "script" ? { script: job.result.script } : { urls: job.result.urls }) : null,
     error: job.error
   };
 }
@@ -368,4 +533,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createServer, loadDotEnv, modelSettings, collectMediaUrls };
+module.exports = {
+  createServer,
+  loadDotEnv,
+  modelSettings,
+  collectMediaUrls,
+  buildScriptRequest,
+  parseGeneratedScript
+};
